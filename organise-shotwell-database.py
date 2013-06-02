@@ -7,8 +7,14 @@ from argparse import ArgumentParser
 
 # TODO: make event directory names configurable
 
+# Constants
 DB_FILE = os.path.join(os.getenv('HOME'), '.local/share/shotwell/data/photo.db')
 DATE_FORMAT = '%Y-%m-%d'
+
+# Globals
+conn = None
+date_format = None
+
 
 def create_argparser():
     parser = ArgumentParser(description='Reorganises shotwell\' photo directories')
@@ -29,7 +35,10 @@ def create_argparser():
     return parser
 
 
-def get_new_event_directory(conn, event_id, event_name):
+def get_new_event_directory(event_id, event_name):
+    global conn
+    global date_format
+
     event_ts_sel = 'SELECT count(*) AS cnt, min(timestamp) AS min_ts, '\
                    'max(timestamp) AS max_ts FROM PhotoTable '\
                    'WHERE event_id=?'
@@ -57,7 +66,7 @@ def get_new_event_directory(conn, event_id, event_name):
         min_date = dt.date.fromtimestamp(min_ts)
         max_date = dt.date.fromtimestamp(max_ts)
 
-    event_dir = min_date.stftime(date_format)
+    event_dir = min_date.strftime(date_format)
     if max_date != min_date:
         event_dir += ' - ' + max_date.strftime(date_format)
     if event_name:
@@ -69,6 +78,9 @@ def get_new_event_directory(conn, event_id, event_name):
 def main():
     parser = create_argparser()
     args = parser.parse_args()
+
+    global date_format
+    global conn
 
     db_file = args.database_file
     date_format = args.date_format
@@ -97,14 +109,18 @@ def main():
 
     events = conn.cursor().execute(event_sel).fetchall()
     for event in events:
-        print 'Processing event', event['id'], ',', event['name']
+        if event['name']:
+            sys.stdout.write("Processing event %d, '%s'...\n" % (event['id'], event['name']))
+        else:
+            sys.stdout.write("Processing event %d...\n" % (event['id']))
 
-        event_dir = get_new_event_directory(conn, event['id'], event['name'])
+        event_dir = get_new_event_directory(event['id'], event['name'])
 
         if event_dir is None:
             continue
 
         new_dir = os.path.join(dest_dir, event_dir)
+        sys.stdout.write("Moving photos to %s...\n" % new_dir)
         if not os.path.exists(new_dir):
             os.mkdir(new_dir)
 
@@ -113,7 +129,8 @@ def main():
 
         for photo in photos:
             # create new file name
-            old_dir, filename = os.path.split(photo['filename'])
+            old_path = photo['filename']
+            old_dir, filename = os.path.split(old_path)
 
             if old_dir == new_dir:
                 # photo is already in the correct place
@@ -130,7 +147,7 @@ def main():
                 new_path = os.path.join(new_dir, name + ext)
 
             upd = conn.cursor()
-            upd.execute(photo_update, (new_path, photo['id']))
+            upd.execute(photo_upd, (new_path, photo['id']))
             process_file(old_path, new_path)
 
             if clean_dirs:
