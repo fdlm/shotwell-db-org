@@ -5,13 +5,10 @@ import sqlite3 as db
 import shutil
 from argparse import ArgumentParser
 
-# TODO:
-#       allow to choose between copy and move
-#       make directory names for events with name and without name configurable
+# TODO: make event directory names configurable
 
 DB_FILE = os.path.join(os.getenv('HOME'), '.local/share/shotwell/data/photo.db')
 DATE_FORMAT = '%Y-%m-%d'
-
 
 def create_argparser():
     parser = ArgumentParser(description='Reorganises shotwell\' photo directories')
@@ -32,6 +29,43 @@ def create_argparser():
     return parser
 
 
+def get_new_event_directory(conn, event_id, event_name):
+    event_ts_sel = 'SELECT count(*) AS cnt, min(timestamp) AS min_ts, '\
+                   'max(timestamp) AS max_ts FROM PhotoTable '\
+                   'WHERE event_id=?'
+
+    event_exp_sel = 'SELECT count(*) AS cnt, min(exposure_time) as min_et, '\
+                    'max(exposure_time) as max_et FROM PhotoTable '\
+                    'WHERE event_id=? AND exposure_time > 0'
+
+    ev_cur = conn.cursor().execute(event_exp_sel, (event_id,))
+    exp_cnt, min_et, max_et = ev_cur.fetchone()
+
+    if exp_cnt > 0:
+        min_date = dt.date.fromtimestamp(min_et)
+        max_date = dt.date.fromtimestamp(max_et)
+    else:
+        # there are no photos in this event with exposure_time set, we'll
+        # use the timestamp instead
+        ts_cur = conn.cursor().execute(event_ts_sel, (event_id,))
+        cnt, min_ts, max_ts = ts_cur.fetchone()
+
+        if cnt == 0:
+            # no photos in this event
+            return None
+
+        min_date = dt.date.fromtimestamp(min_ts)
+        max_date = dt.date.fromtimestamp(max_ts)
+
+    event_dir = min_date.stftime(date_format)
+    if max_date != min_date:
+        event_dir += ' - ' + max_date.strftime(date_format)
+    if event_name:
+        event_dir += ' - ' + event_name.replace('/', '-')
+
+    return event_dir
+
+
 def main():
     parser = create_argparser()
     args = parser.parse_args()
@@ -43,83 +77,67 @@ def main():
     clean_dirs = args.clean
 
     if not (os.path.exists(db_file) and os.path.isfile(db_file)):
-        sys.stderr.write("Database file %s does not exist." % db_file)
+        sys.stderr.write("Database file %s does not exist.\n" % db_file)
         return 1
 
     if not (os.path.exists(dest_dir) and os.path.isdir(dest_dir)):
-        sys.stderr.write("Invalid destination directory '%s'." % dest_dir)
+        sys.stderr.write("Invalid destination directory '%s'.\n" % dest_dir)
         return 2
 
     conn = db.connect(db_file, isolation_level=None)
     conn.row_factory = db.Row
 
-    event_select = 'SELECT id, name FROM EventTable'
-    photo_select = 'SELECT id, filename FROM PhotoTable WHERE event_id=? UNION ALL '\
-                   'SELECT id, filename FROM VideoTable WHERE event_id=?'
-    event_timestamp = 'SELECT count(*) AS cnt, min(timestamp) AS min_ts, max(timestamp) AS max_ts FROM PhotoTable '\
-                 'WHERE event_id=?'
-    event_exposure_time = 'SELECT count(*) AS cnt, min(exposure_time) as min_et, max(exposure_time) as max_et FROM PhotoTable WHERE event_id=? AND exposure_time > 0'
-    photo_update = 'UPDATE PhotoTable SET filename=? WHERE id=?'
+    event_sel = 'SELECT id, name FROM EventTable'
 
-    events = conn.cursor().execute(event_select).fetchall()
+    photo_sel = 'SELECT id, filename FROM PhotoTable WHERE event_id=? '\
+                'UNION ALL '\
+                'SELECT id, filename FROM VideoTable WHERE event_id=?'
+
+    photo_upd = 'UPDATE PhotoTable SET filename=? WHERE id=?'
+
+    events = conn.cursor().execute(event_sel).fetchall()
     for event in events:
         print 'Processing event', event['id'], ',', event['name']
-        exp_cnt, min_et, max_et = conn.cursor().execute(event_exposure_time, (event['id'],)).fetchone()
-        if exp_cnt > 0:
-            min_date = dt.date.fromtimestamp(min_et)
-            max_date = dt.date.fromtimestamp(max_et)
-        else:
-            cnt, min_ts, max_ts = conn.cursor().execute(event_timestamp, (event['id'],)).fetchone()
-            if cnt == 0:
-                continue
 
-            min_date = dt.date.fromtimestamp(min_ts)
-            max_date = dt.date.fromtimestamp(max_ts)
+        event_dir = get_new_event_directory(conn, event['id'], event['name'])
 
-        if event['name']:
-            # we have an event name
-            event_name = min_date.strftime(date_format) + ' - ' + event['name'].replace('/', '-')
-        else:
-            # no event name
-            event_name = min_date.strftime(date_format)
-            if min_date != max_date:
-                event_name += ' - ' + max_date.strftime(date_format)
+        if event_dir is None:
+            continue
 
-        new_folder_name = os.path.join(dest_dir, event_name)
-        if not os.path.exists(new_folder_name):
-            os.mkdir(new_folder_name)
+        new_dir = os.path.join(dest_dir, event_dir)
+        if not os.path.exists(new_dir):
+            os.mkdir(new_dir)
 
-        photos = conn.cursor().execute(photo_select, (event['id'],event['id'])).fetchall()
+        photo_cur = conn.cursor().execute(photo_sel, (event['id'], event['id']))
+        photos = photo_cur.fetchall()
 
         for photo in photos:
             # create new file name
-            old_path = photo['filename']
-            filename = os.path.basename(old_path)
-            new_path = os.path.join(new_folder_name, filename)
+            old_dir, filename = os.path.split(photo['filename'])
 
-            if old_path != new_path:
-                dupl = 1
-                while os.path.exists(new_path):
-                    name, ext = os.path.splitext(filename)
-                    name += '_%d' % dupl
-                    dupl += 1
-                    new_path = os.path.join(new_folder_name, name + ext)
-                print new_path
-                # update database
-                upd = conn.cursor()
-                upd.execute(photo_update, (new_path, photo['id']))
+            if old_dir == new_dir:
+                # photo is already in the correct place
+                continue
 
-                # move to new position
-                process_file(old_path, new_path)
+            new_path = os.path.join(new_dir, filename)
 
-                # conn.commit()
+            # if there's already a photo with the same filename
+            dupl = 1
+            while os.path.exists(new_path):
+                name, ext = os.path.splitext(filename)
+                name += '_%d' % dupl
+                dupl += 1
+                new_path = os.path.join(new_dir, name + ext)
 
-                if clean_dirs:
-                    # delete directory if empty
-                    old_dir = os.path.dirname(old_path)
-                    while os.listdir(old_dir) == []:
-                        os.rmdir(old_dir)
-                        old_dir = os.path.dirname(old_dir)
+            upd = conn.cursor()
+            upd.execute(photo_update, (new_path, photo['id']))
+            process_file(old_path, new_path)
+
+            if clean_dirs:
+                # delete directory if empty
+                while os.listdir(old_dir) == []:
+                    os.rmdir(old_dir)
+                    old_dir = os.path.dirname(old_dir)
 
     return 0
 
