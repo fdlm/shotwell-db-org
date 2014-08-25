@@ -147,10 +147,8 @@ def main():
             continue
 
         new_dir = os.path.join(dest_dir, event_dir)
-        if dry_run:
-            sys.stdout.write("Would move photos to %s (--dry-run)...\n" % new_dir)
-        else:
-            sys.stdout.write("Moving photos to %s...\n" % new_dir)
+        sys.stdout.write("Moving photos to %s...\n" % new_dir)
+        if not dry_run:
             if not os.path.exists(new_dir):
                 os.mkdir(new_dir)
 
@@ -170,12 +168,14 @@ def main():
 
             # if there's already a photo with the same filename
             dupl = 1
-            while os.path.exists(new_path):
-                name, ext = os.path.splitext(filename)
-                name += '_%d' % dupl
-                dupl += 1
-                new_path = os.path.join(new_dir, name + ext)
-                
+            if os.path.exists(new_path):
+                while os.path.exists(new_path):
+                    name, ext = os.path.splitext(filename)
+                    name += '_%d' % dupl
+                    dupl += 1
+                    new_path = os.path.join(new_dir, name + ext)
+                sys.stdout.write("Collision with existing file, renaming %s to %s%s" % (filename, name, ext))
+
             if not dry_run:
                 upd = conn.cursor()
                 upd.execute(photo_upd, (new_path, photo['id']))
@@ -184,6 +184,7 @@ def main():
                 if clean_dirs:
                     # delete directory if empty
                     while os.listdir(old_dir) == []:
+                        sys.stdout.write("Removing now-empty directory %s" % old_dir)
                         os.rmdir(old_dir)
                         old_dir = os.path.dirname(old_dir)
 
