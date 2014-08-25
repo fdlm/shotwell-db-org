@@ -55,8 +55,7 @@ def create_argparser():
                        dest='clean')
 
     group = parser.add_argument_group()
-    group.add_argument('--verbose', '-v', action='count',
-                       default='Output verbosity')
+    group.add_argument('--verbose', '-v', action='count', help='Increase output verbosity')
     parser.add_argument('--dry-run', '-n', action='store_true', default=False,
                         help="Dry run. Don't actually make any changes")
 
@@ -182,8 +181,12 @@ def main():
             if not dry_run:
                 upd = conn.cursor()
                 if photo['type']=='photo':
+                    if args.verbose>0:
+                        sys.stdout.write("Moving photo from %s" % old_path)
                     upd.execute(photo_upd, (new_path, photo['id']))
                 elif photo['type']=='video':
+                    if args.verbose>0:
+                        sys.stdout.write("Moving video from %s" % old_path)
                     upd.execute(video_upd, (new_path, photo['id']))
                 process_file(old_path, new_path)
 
