@@ -55,6 +55,8 @@ def create_argparser():
                        dest='clean')
 
     group = parser.add_argument_group()
+    group.add_argument('--verbose', '-v', action='count',
+                       default='Output verbosity')
     parser.add_argument('--dry-run', '-n', action='store_true', default=False,
                         help="Dry run. Don't actually make any changes")
 
@@ -128,11 +130,12 @@ def main():
 
     event_sel = 'SELECT id, name FROM EventTable'
 
-    photo_sel = 'SELECT id, filename FROM PhotoTable WHERE event_id=? '\
-                'UNION ALL '\
-                'SELECT id, filename FROM VideoTable WHERE event_id=?'
+    photo_sel = "SELECT id, 'photo' type, filename FROM PhotoTable WHERE event_id=? "\
+                "UNION ALL "\
+                "SELECT id, 'video' type, filename FROM VideoTable WHERE event_id=?"
 
     photo_upd = 'UPDATE PhotoTable SET filename=? WHERE id=?'
+    video_upd = 'UPDATE VideoTable SET filename=? WHERE id=?'
 
     events = conn.cursor().execute(event_sel).fetchall()
     for event in events:
@@ -178,7 +181,10 @@ def main():
 
             if not dry_run:
                 upd = conn.cursor()
-                upd.execute(photo_upd, (new_path, photo['id']))
+                if photo['type']=='photo':
+                    upd.execute(photo_upd, (new_path, photo['id']))
+                elif photo['type']=='video':
+                    upd.execute(video_upd, (new_path, photo['id']))
                 process_file(old_path, new_path)
 
                 if clean_dirs:
