@@ -1,3 +1,5 @@
+#!/usr/bin/python2
+#
 # Copyright (c) 2013 Filip Korzeniowski
 #
 # Permission is hereby granted, free of charge, to any person obtaining a copy
@@ -51,6 +53,10 @@ def create_argparser():
     group.add_argument('--no-clean', '-nc', action='store_const', const=False,
                        default=True, help='Do not remove empty photo directories',
                        dest='clean')
+
+    group = parser.add_argument_group()
+    parser.add_argument('--dry-run', '-n', action='store_true', default=False,
+                        help="Dry run. Don't actually make any changes")
 
     return parser
 
@@ -107,6 +113,7 @@ def main():
     dest_dir = args.destination_dir
     process_file = args.file_operator
     clean_dirs = args.clean
+    dry_run = args.dry_run
 
     if not (os.path.exists(db_file) and os.path.isfile(db_file)):
         sys.stderr.write("Database file %s does not exist.\n" % db_file)
@@ -140,9 +147,12 @@ def main():
             continue
 
         new_dir = os.path.join(dest_dir, event_dir)
-        sys.stdout.write("Moving photos to %s...\n" % new_dir)
-        if not os.path.exists(new_dir):
-            os.mkdir(new_dir)
+        if dry_run:
+            sys.stdout.write("Would move photos to %s (--dry-run)...\n" % new_dir)
+        else:
+            sys.stdout.write("Moving photos to %s...\n" % new_dir)
+            if not os.path.exists(new_dir):
+                os.mkdir(new_dir)
 
         photo_cur = conn.cursor().execute(photo_sel, (event['id'], event['id']))
         photos = photo_cur.fetchall()
@@ -165,16 +175,17 @@ def main():
                 name += '_%d' % dupl
                 dupl += 1
                 new_path = os.path.join(new_dir, name + ext)
+                
+            if not dry_run:
+                upd = conn.cursor()
+                upd.execute(photo_upd, (new_path, photo['id']))
+                process_file(old_path, new_path)
 
-            upd = conn.cursor()
-            upd.execute(photo_upd, (new_path, photo['id']))
-            process_file(old_path, new_path)
-
-            if clean_dirs:
-                # delete directory if empty
-                while os.listdir(old_dir) == []:
-                    os.rmdir(old_dir)
-                    old_dir = os.path.dirname(old_dir)
+                if clean_dirs:
+                    # delete directory if empty
+                    while os.listdir(old_dir) == []:
+                        os.rmdir(old_dir)
+                        old_dir = os.path.dirname(old_dir)
 
     return 0
 
