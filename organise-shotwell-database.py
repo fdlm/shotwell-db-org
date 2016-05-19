@@ -1,3 +1,5 @@
+#!/usr/bin/python2
+#
 # Copyright (c) 2013 Filip Korzeniowski
 #
 # Permission is hereby granted, free of charge, to any person obtaining a copy
@@ -51,6 +53,11 @@ def create_argparser():
     group.add_argument('--no-clean', '-nc', action='store_const', const=False,
                        default=True, help='Do not remove empty photo directories',
                        dest='clean')
+
+    group = parser.add_argument_group()
+    group.add_argument('--verbose', '-v', action='count', help='Increase output verbosity')
+    parser.add_argument('--dry-run', '-n', action='store_true', default=False,
+                        help="Dry run. Don't actually make any changes")
 
     return parser
 
@@ -107,6 +114,7 @@ def main():
     dest_dir = args.destination_dir
     process_file = args.file_operator
     clean_dirs = args.clean
+    dry_run = args.dry_run
 
     if not (os.path.exists(db_file) and os.path.isfile(db_file)):
         sys.stderr.write("Database file %s does not exist.\n" % db_file)
@@ -121,11 +129,12 @@ def main():
 
     event_sel = 'SELECT id, name FROM EventTable'
 
-    photo_sel = 'SELECT id, filename FROM PhotoTable WHERE event_id=? '\
-                'UNION ALL '\
-                'SELECT id, filename FROM VideoTable WHERE event_id=?'
+    photo_sel = "SELECT id, 'photo' type, filename FROM PhotoTable WHERE event_id=? "\
+                "UNION ALL "\
+                "SELECT id, 'video' type, filename FROM VideoTable WHERE event_id=?"
 
     photo_upd = 'UPDATE PhotoTable SET filename=? WHERE id=?'
+    video_upd = 'UPDATE VideoTable SET filename=? WHERE id=?'
 
     events = conn.cursor().execute(event_sel).fetchall()
     for event in events:
@@ -141,8 +150,9 @@ def main():
 
         new_dir = os.path.join(dest_dir, event_dir)
         sys.stdout.write("Moving photos to %s...\n" % new_dir)
-        if not os.path.exists(new_dir):
-            os.mkdir(new_dir)
+        if not dry_run:
+            if not os.path.exists(new_dir):
+                os.mkdir(new_dir)
 
         photo_cur = conn.cursor().execute(photo_sel, (event['id'], event['id']))
         photos = photo_cur.fetchall()
@@ -160,21 +170,32 @@ def main():
 
             # if there's already a photo with the same filename
             dupl = 1
-            while os.path.exists(new_path):
-                name, ext = os.path.splitext(filename)
-                name += '_%d' % dupl
-                dupl += 1
-                new_path = os.path.join(new_dir, name + ext)
+            if os.path.exists(new_path):
+                while os.path.exists(new_path):
+                    name, ext = os.path.splitext(filename)
+                    name += '_%d' % dupl
+                    dupl += 1
+                    new_path = os.path.join(new_dir, name + ext)
+                sys.stdout.write("Collision with existing file, renaming %s to %s%s" % (filename, name, ext))
 
-            upd = conn.cursor()
-            upd.execute(photo_upd, (new_path, photo['id']))
-            process_file(old_path, new_path)
+            if not dry_run:
+                upd = conn.cursor()
+                if photo['type']=='photo':
+                    if args.verbose>0:
+                        sys.stdout.write("Moving photo from %s" % old_path)
+                    upd.execute(photo_upd, (new_path, photo['id']))
+                elif photo['type']=='video':
+                    if args.verbose>0:
+                        sys.stdout.write("Moving video from %s" % old_path)
+                    upd.execute(video_upd, (new_path, photo['id']))
+                process_file(old_path, new_path)
 
-            if clean_dirs:
-                # delete directory if empty
-                while os.listdir(old_dir) == []:
-                    os.rmdir(old_dir)
-                    old_dir = os.path.dirname(old_dir)
+                if clean_dirs:
+                    # delete directory if empty
+                    while os.listdir(old_dir) == []:
+                        sys.stdout.write("Removing now-empty directory %s" % old_dir)
+                        os.rmdir(old_dir)
+                        old_dir = os.path.dirname(old_dir)
 
     return 0
 
